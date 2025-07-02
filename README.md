@@ -5,6 +5,8 @@ A React application that allows users to enter source and destination IP address
 ## Features
 
 - **Microsoft Entra ID SSO**: Secure authentication using Microsoft accounts
+- **Page Protection**: Complete application protection - unauthenticated users cannot access any content
+- **Silent Authentication**: Automatic sign-in on corporate networks (federated SSO)
 - **Network Configuration Form**: Input fields for source/destination IP and port
 - **Form Validation**: Client-side validation for IP addresses and ports
 - **Modern UI**: Beautiful, responsive design with animations
@@ -78,24 +80,31 @@ The application will be available at `http://localhost:5173`
 
 ## Usage
 
-1. **Authentication**: Click "Sign in with Microsoft" to authenticate using your Microsoft account
-2. **Form Input**: Fill in the network configuration form:
+1. **Access Control**: The application is completely protected - users must authenticate to access any content
+2. **Authentication**: 
+   - **Corporate Network**: Automatic silent authentication via federated SSO
+   - **External/Manual**: Click "Sign in with Microsoft" to authenticate
+3. **Form Input**: Fill in the network configuration form:
    - Source IP Address (e.g., 192.168.1.1)
    - Source Port (e.g., 8080)
    - Destination IP Address (e.g., 10.0.0.1)
    - Destination Port (e.g., 443)
    - Description (e.g., "Web server connection")
-3. **Submit**: Click the "Search" button to submit the configuration
+4. **Submit**: Click the "Search" button to submit the configuration
 
 ## Project Structure
 
 ```
 src/
 ├── components/
-│   ├── AuthComponent.tsx      # Microsoft Entra ID authentication
+│   ├── ProtectedRoute.tsx     # Page protection wrapper
+│   ├── ProtectedRoute.css     # Protection screen styling
+│   ├── AuthComponent.tsx      # User info and logout
 │   ├── AuthComponent.css      # Auth component styling
 │   ├── NetworkForm.tsx        # Main form component
 │   └── NetworkForm.css        # Form styling
+├── services/
+│   └── apiService.ts          # API service with authentication
 ├── config/
 │   └── authConfig.ts          # MSAL configuration
 ├── App.tsx                    # Main application component
