@@ -1,10 +1,24 @@
-import React from 'react';
+import React, { useEffect } from 'react';
 import { useMsal } from '@azure/msal-react';
 import { loginRequest } from '../config/authConfig';
 import './AuthComponent.css';
 
 const AuthComponent: React.FC = () => {
   const { instance, accounts } = useMsal();
+
+  // Attempt silent authentication on component mount
+  useEffect(() => {
+    if (accounts.length === 0) {
+      // Try silent authentication first
+      instance.ssoSilent(loginRequest)
+        .then(response => {
+          console.log('Silent authentication successful');
+        })
+        .catch(error => {
+          console.log('Silent authentication failed, user will need to login manually');
+        });
+    }
+  }, [instance, accounts.length]);
 
   const handleLogin = () => {
     instance.loginPopup(loginRequest).catch(e => {

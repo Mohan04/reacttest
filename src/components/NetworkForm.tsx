@@ -1,4 +1,6 @@
 import React, { useState } from 'react';
+import { useMsal } from '@azure/msal-react';
+import { apiService, type NetworkConfig } from '../services/apiService';
 import './NetworkForm.css';
 
 interface NetworkFormData {
@@ -10,6 +12,7 @@ interface NetworkFormData {
 }
 
 const NetworkForm: React.FC = () => {
+  const { accounts } = useMsal();
   const [formData, setFormData] = useState<NetworkFormData>({
     sourceIp: '',
     sourcePort: '',
@@ -19,6 +22,7 @@ const NetworkForm: React.FC = () => {
   });
 
   const [isLoading, setIsLoading] = useState(false);
+  const [apiStatus, setApiStatus] = useState<{ type: 'success' | 'error' | null; message: string }>({ type: null, message: '' });
 
   const handleInputChange = (e: React.ChangeEvent<HTMLInputElement | HTMLTextAreaElement>) => {
     const { name, value } = e.target;
@@ -68,28 +72,52 @@ const NetworkForm: React.FC = () => {
       return;
     }
 
+    // Check if user is authenticated
+    if (accounts.length === 0) {
+      setApiStatus({ type: 'error', message: 'Please sign in to submit network configurations' });
+      return;
+    }
+
     setIsLoading(true);
+    setApiStatus({ type: null, message: '' });
     
     try {
-      // Here you would typically make an API call to your backend
-      console.log('Form submitted with data:', formData);
+      // Get user info for API call
+      const userInfo = {
+        id: accounts[0].localAccountId,
+        email: accounts[0].username
+      };
+
+      // Prepare network config data
+      const networkConfig: NetworkConfig = {
+        sourceIp: formData.sourceIp,
+        sourcePort: formData.sourcePort,
+        destinationIp: formData.destinationIp,
+        destinationPort: formData.destinationPort,
+        description: formData.description
+      };
+
+      // Make API call with service authentication
+      const response = await apiService.postNetworkConfig(networkConfig, userInfo);
       
-      // Simulate API call
-      await new Promise(resolve => setTimeout(resolve, 1000));
+      if (response.success) {
+        setApiStatus({ type: 'success', message: response.message });
+        
+        // Reset form on success
+        setFormData({
+          sourceIp: '',
+          sourcePort: '',
+          destinationIp: '',
+          destinationPort: '',
+          description: ''
+        });
+      } else {
+        setApiStatus({ type: 'error', message: response.message });
+      }
       
-      alert('Network configuration submitted successfully!');
-      
-      // Reset form
-      setFormData({
-        sourceIp: '',
-        sourcePort: '',
-        destinationIp: '',
-        destinationPort: '',
-        description: ''
-      });
     } catch (error) {
       console.error('Error submitting form:', error);
-      alert('Error submitting form. Please try again.');
+      setApiStatus({ type: 'error', message: 'Error submitting form. Please try again.' });
     } finally {
       setIsLoading(false);
     }
@@ -171,6 +199,13 @@ const NetworkForm: React.FC = () => {
               />
             </div>
           </div>
+
+          {/* Status Messages */}
+          {apiStatus.type && (
+            <div className={`status-message ${apiStatus.type}`}>
+              {apiStatus.message}
+            </div>
+          )}
 
           <div className="form-actions">
             <button 
