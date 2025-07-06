@@ -2,135 +2,153 @@
 
 ## Environment Variables
 
-Create a `.env.local` file in your project root with the following variables:
+To configure the AWS Lambda integration, you need to set the following environment variables:
 
-```bash
-# API Configuration
-VITE_API_BASE_URL=https://your-api-domain.com/api
-VITE_SERVICE_API_KEY=your-service-api-key-here
+### Required Environment Variables
 
-# Microsoft Entra ID Configuration (optional - can be hardcoded)
-VITE_AZURE_CLIENT_ID=4529ea36-d31c-4c2f-8ad8-07f4e91667b6
-VITE_AZURE_TENANT_ID=219bf1de-e014-41fb-950d-1f1ea6214410
-```
+1. **VITE_LAMBDA_URL**: The URL of your AWS Lambda function
+   ```
+   VITE_LAMBDA_URL=https://your-lambda-function-url.lambda-url.region.on.aws
+   ```
 
-## Backend API Requirements
+2. **VITE_SERVICE_API_KEY**: Your service API key for authentication
+   ```
+   VITE_SERVICE_API_KEY=your-service-api-key
+   ```
 
-Your backend API should implement these endpoints:
+3. **VITE_API_BASE_URL**: Your main API base URL (for legacy endpoints)
+   ```
+   VITE_API_BASE_URL=https://your-api-domain.com/api
+   ```
 
-### POST /api/network-config
-**Headers:**
-- `Authorization: Bearer {service-api-key}`
-- `X-Service-ID: network-config-service`
-- `X-User-Context: {user-email}`
+## AWS Lambda Function Requirements
 
-**Request Body:**
-```json
-{
-  "sourceIp": "192.168.1.1",
-  "sourcePort": "8080",
-  "destinationIp": "10.0.0.1",
-  "destinationPort": "443",
-  "description": "Web server connection",
-  "userId": "user-local-account-id",
-  "userEmail": "user@company.com",
-  "timestamp": "2024-01-15T10:30:00.000Z"
-}
-```
+Your AWS Lambda function should handle the following:
 
-**Response:**
-```json
-{
-  "success": true,
-  "message": "Network configuration submitted successfully",
-  "data": {
-    "id": "config-123",
-    "status": "processing"
+### POST Request (Submit Network Query)
+- **Endpoint**: `POST /`
+- **Headers**:
+  - `Content-Type: application/json`
+  - `Authorization: Bearer {api-key}`
+  - `X-Service-ID: network-query-service`
+  - `X-User-Context: {user-email}`
+
+- **Request Body**:
+  ```json
+  {
+    "sourceIp": "192.168.1.1",
+    "sourcePort": "8080",
+    "destinationIp": "10.0.0.1",
+    "destinationPort": "443",
+    "description": "Network query description",
+    "userId": "user-id",
+    "userEmail": "user@example.com",
+    "timestamp": "2024-01-01T00:00:00.000Z",
+    "action": "submit_network_query"
   }
-}
+  ```
+
+- **Response**:
+  ```json
+  {
+    "sessionId": "unique-session-id",
+    "status": "processing",
+    "message": "Query submitted successfully"
+  }
+  ```
+
+### GET Request (Query Response)
+- **Endpoint**: `GET /query`
+- **Headers**:
+  - `Authorization: Bearer {api-key}`
+  - `X-Service-ID: network-query-service`
+  - `X-User-Context: {user-email}`
+  - `X-Session-ID: {session-id}`
+
+- **Response**:
+  ```json
+  {
+    "status": "completed",
+    "result": {
+      "networkAnalysis": "Analysis results here",
+      "recommendations": "Security recommendations",
+      "riskScore": 85
+    },
+    "completed": true,
+    "error": null
+  }
+  ```
+
+## Implementation Notes
+
+1. **Session Management**: The Lambda function should generate a unique session ID for each query submission and store the query state.
+
+2. **Polling**: The frontend will poll the `/query` endpoint until the response is completed or an error occurs.
+
+3. **Authentication**: Use the provided API key for service-to-service authentication.
+
+4. **Error Handling**: Return appropriate HTTP status codes and error messages for different failure scenarios.
+
+## Example Lambda Function Structure
+
+```javascript
+exports.handler = async (event) => {
+  const { httpMethod, path, headers, body } = event;
+  
+  // Handle CORS
+  const corsHeaders = {
+    'Access-Control-Allow-Origin': '*',
+    'Access-Control-Allow-Headers': 'Content-Type,Authorization,X-Service-ID,X-User-Context,X-Session-ID',
+    'Access-Control-Allow-Methods': 'GET,POST,OPTIONS'
+  };
+  
+  if (httpMethod === 'OPTIONS') {
+    return {
+      statusCode: 200,
+      headers: corsHeaders,
+      body: ''
+    };
+  }
+  
+  // Validate API key
+  const apiKey = headers.Authorization?.replace('Bearer ', '');
+  if (apiKey !== process.env.SERVICE_API_KEY) {
+    return {
+      statusCode: 401,
+      headers: corsHeaders,
+      body: JSON.stringify({ error: 'Unauthorized' })
+    };
+  }
+  
+  if (httpMethod === 'POST') {
+    // Handle network query submission
+    const sessionId = generateSessionId();
+    // Store query in database/cache
+    // Start processing...
+    
+    return {
+      statusCode: 200,
+      headers: corsHeaders,
+      body: JSON.stringify({
+        sessionId: sessionId,
+        status: 'processing',
+        message: 'Query submitted successfully'
+      })
+    };
+  }
+  
+  if (httpMethod === 'GET' && path === '/query') {
+    const sessionId = headers['X-Session-ID'];
+    // Retrieve query status and results
+    // Return appropriate response
+  }
+};
 ```
-
-### GET /api/network-configs
-**Headers:**
-- `Authorization: Bearer {service-api-key}`
-- `X-Service-ID: network-config-service`
-- `X-User-Context: {user-email}`
-
-**Query Parameters:**
-- `userEmail` (optional): Filter by user email
-
-### GET /api/health
-**Headers:**
-- `Authorization: Bearer {service-api-key}`
-- `X-Service-ID: network-config-service`
 
 ## Security Considerations
 
-1. **Service API Key**: Use a strong, randomly generated API key
-2. **HTTPS**: Always use HTTPS in production
-3. **Rate Limiting**: Implement rate limiting on your API
-4. **Input Validation**: Validate all inputs on the backend
-5. **CORS**: Configure CORS to only allow your frontend domain
-
-## Authentication Flow
-
-1. **User Authentication**: User signs in via Microsoft Entra ID SSO
-2. **Frontend Validation**: Frontend checks if user is authenticated
-3. **API Call**: Frontend makes API call with service credentials
-4. **User Context**: User information is passed in headers for audit trail
-5. **Backend Processing**: Backend processes request using service authentication
-
-## Example Backend Implementation (Node.js/Express)
-
-```javascript
-const express = require('express');
-const app = express();
-
-// Middleware to validate service API key
-const validateServiceAuth = (req, res, next) => {
-  const apiKey = req.headers.authorization?.replace('Bearer ', '');
-  const serviceId = req.headers['x-service-id'];
-  
-  if (apiKey !== process.env.SERVICE_API_KEY || serviceId !== 'network-config-service') {
-    return res.status(401).json({ error: 'Unauthorized' });
-  }
-  
-  next();
-};
-
-// POST network configuration
-app.post('/api/network-config', validateServiceAuth, (req, res) => {
-  const { sourceIp, sourcePort, destinationIp, destinationPort, description, userEmail } = req.body;
-  
-  // Process the network configuration
-  // Store in database, trigger network operations, etc.
-  
-  res.json({
-    success: true,
-    message: 'Network configuration submitted successfully',
-    data: {
-      id: 'config-' + Date.now(),
-      status: 'processing'
-    }
-  });
-});
-
-// GET network configurations
-app.get('/api/network-configs', validateServiceAuth, (req, res) => {
-  const userEmail = req.query.userEmail;
-  
-  // Retrieve configurations from database
-  // Filter by userEmail if provided
-  
-  res.json({
-    success: true,
-    message: 'Network configurations retrieved successfully',
-    data: []
-  });
-});
-
-// Health check
-app.get('/api/health', validateServiceAuth, (req, res) => {
-  res.json({ status: 'healthy' });
-});
-``` 
+1. **API Key Management**: Store API keys securely and rotate them regularly.
+2. **Input Validation**: Validate all input parameters on the Lambda function.
+3. **Rate Limiting**: Implement rate limiting to prevent abuse.
+4. **Logging**: Log all requests for monitoring and debugging.
+5. **Error Handling**: Don't expose sensitive information in error messages. 

@@ -22,7 +22,10 @@ const NetworkForm: React.FC = () => {
   });
 
   const [isLoading, setIsLoading] = useState(false);
-  const [apiStatus, setApiStatus] = useState<{ type: 'success' | 'error' | null; message: string }>({ type: null, message: '' });
+  const [isPolling, setIsPolling] = useState(false);
+  const [sessionId, setSessionId] = useState<string | null>(null);
+  const [queryResult, setQueryResult] = useState<any>(null);
+  const [apiStatus, setApiStatus] = useState<{ type: 'success' | 'error' | 'info' | null; message: string }>({ type: null, message: '' });
 
   const handleInputChange = (e: React.ChangeEvent<HTMLInputElement | HTMLTextAreaElement>) => {
     const { name, value } = e.target;
@@ -79,6 +82,9 @@ const NetworkForm: React.FC = () => {
     }
 
     setIsLoading(true);
+    setIsPolling(false);
+    setSessionId(null);
+    setQueryResult(null);
     setApiStatus({ type: null, message: '' });
     
     try {
@@ -97,11 +103,31 @@ const NetworkForm: React.FC = () => {
         description: formData.description
       };
 
-      // Make API call with service authentication
-      const response = await apiService.postNetworkConfig(networkConfig, userInfo);
+      // Step 1: Submit to AWS Lambda and get session ID
+      setApiStatus({ type: 'info', message: 'Submitting network query to AWS Lambda...' });
+      const submitResponse = await apiService.submitNetworkForm(networkConfig, userInfo);
       
-      if (response.success) {
-        setApiStatus({ type: 'success', message: response.message });
+      if (!submitResponse.success) {
+        setApiStatus({ type: 'error', message: submitResponse.message });
+        return;
+      }
+
+      const sessionId = submitResponse.data?.sessionId;
+      if (!sessionId) {
+        setApiStatus({ type: 'error', message: 'No session ID received from Lambda' });
+        return;
+      }
+
+      setSessionId(sessionId);
+      setApiStatus({ type: 'info', message: `Query submitted successfully. Session ID: ${sessionId}. Polling for results...` });
+
+      // Step 2: Poll for results
+      setIsPolling(true);
+      const pollResponse = await apiService.pollForResponse(sessionId, userInfo, 10);
+      
+      if (pollResponse.success) {
+        setQueryResult(pollResponse.data);
+        setApiStatus({ type: 'success', message: 'Query completed successfully! Results are ready.' });
         
         // Reset form on success
         setFormData({
@@ -112,7 +138,7 @@ const NetworkForm: React.FC = () => {
           description: ''
         });
       } else {
-        setApiStatus({ type: 'error', message: response.message });
+        setApiStatus({ type: 'error', message: pollResponse.message || 'Failed to get query results' });
       }
       
     } catch (error) {
@@ -120,6 +146,7 @@ const NetworkForm: React.FC = () => {
       setApiStatus({ type: 'error', message: 'Error submitting form. Please try again.' });
     } finally {
       setIsLoading(false);
+      setIsPolling(false);
     }
   };
 
@@ -207,13 +234,28 @@ const NetworkForm: React.FC = () => {
             </div>
           )}
 
+          {/* Session ID Display */}
+          {sessionId && (
+            <div className="session-info">
+              <strong>Session ID:</strong> {sessionId}
+            </div>
+          )}
+
+          {/* Query Results Display */}
+          {queryResult && (
+            <div className="query-results">
+              <h3>Query Results</h3>
+              <pre>{JSON.stringify(queryResult, null, 2)}</pre>
+            </div>
+          )}
+
           <div className="form-actions">
             <button 
               type="submit" 
               className="submit-btn"
-              disabled={isLoading}
+              disabled={isLoading || isPolling}
             >
-              {isLoading ? 'Searching...' : 'Search'}
+              {isLoading ? 'Submitting...' : isPolling ? 'Polling for Results...' : 'Search'}
             </button>
           </div>
         </form>

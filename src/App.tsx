@@ -5,6 +5,7 @@ import { msalConfig } from './config/authConfig';
 import ProtectedRoute from './components/ProtectedRoute';
 import AuthComponent from './components/AuthComponent';
 import NetworkForm from './components/NetworkForm';
+
 import './App.css';
 
 // Initialize MSAL
@@ -17,6 +18,7 @@ function App() {
         <ProtectedRoute>
           <AuthComponent />
           <NetworkForm />
+        
         </ProtectedRoute>
       </div>
     </MsalProvider>
