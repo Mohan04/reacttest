@@ -1,276 +1,188 @@
-# AWS Proxy API
+# AWS Gateway Proxy
 
-A Python FastAPI application that acts as a proxy between your React UI and AWS services. It validates Azure AD tokens and forwards authenticated requests to AWS using service account credentials.
-
-## Features
-
-- **Azure AD Token Validation**: Validates JWT tokens from Azure AD
-- **AWS Service Integration**: Supports Lambda, S3, EC2, and CloudWatch
-- **User Context Forwarding**: Adds user information to AWS requests
-- **CORS Support**: Configured for React development
-- **Health Checks**: Built-in health monitoring
-- **Comprehensive Logging**: Detailed request/response logging
+A Python FastAPI proxy that validates Azure AD (Entra ID) bearer tokens from frontend requests and forwards authenticated requests to AWS API Gateway.
 
 ## Architecture
 
 ```
-React UI → Python Proxy → AWS Services
-    ↓           ↓           ↓
-Azure AD   Token Val.   Service Account
+Frontend → Python Proxy → AWS API Gateway → AWS Services
+    ↓           ↓              ↓              ↓
+Azure AD   Token Val.    API Gateway    Lambda/S3/EC2
 ```
+
+## Features
+
+- **Azure AD Token Validation**: Validates JWT tokens from Azure AD using public keys
+- **Request Forwarding**: Forwards authenticated requests to AWS API Gateway
+- **User Context**: Adds user information as headers to AWS Gateway requests
+- **CORS Support**: Configured for frontend integration
+- **Health Check**: Monitors Azure and AWS Gateway connectivity
+- **Universal Proxy**: Handles all HTTP methods (GET, POST, PUT, DELETE, PATCH)
+
+## How It Works
+
+1. **Frontend Request**: Frontend sends API request with Azure AD bearer token
+2. **Token Validation**: Python proxy validates the token using Azure AD public keys
+3. **Request Forwarding**: After successful authentication, forwards the same request to AWS API Gateway
+4. **User Context**: Adds user information (ID, email, roles, groups) as headers
+5. **Response**: Returns the response from AWS API Gateway back to frontend
 
 ## Setup
 
-### 1. Install Dependencies
+1. **Install dependencies**:
+   ```bash
+   pip install -r requirements.txt
+   ```
 
-```bash
-cd python_proxy
-pip install -r requirements.txt
-```
+2. **Configure environment variables**:
+   ```bash
+   cp env.example .env
+   # Edit .env with your Azure AD and AWS API Gateway credentials
+   ```
 
-### 2. Configure Environment Variables
+3. **Required environment variables**:
+   - `AZURE_TENANT_ID`: Your Azure AD tenant ID
+   - `AZURE_CLIENT_ID`: Your Azure AD application client ID
+   - `AZURE_CLIENT_SECRET`: Your Azure AD application client secret
+   - `AWS_API_GATEWAY_URL`: Your AWS API Gateway endpoint URL
+   - `AWS_API_KEY`: Your AWS API Gateway API key
 
-Copy the example environment file and configure your settings:
-
-```bash
-cp env.example .env
-```
-
-Edit `.env` with your actual values:
-
-```env
-# Azure AD Configuration
-AZURE_TENANT_ID=your-tenant-id
-AZURE_CLIENT_ID=your-client-id
-AZURE_CLIENT_SECRET=your-client-secret
-
-# AWS Configuration
-AWS_ACCESS_KEY_ID=your-aws-access-key
-AWS_SECRET_ACCESS_KEY=your-aws-secret-key
-AWS_REGION=us-east-1
-AWS_SESSION_TOKEN=your-aws-session-token  # Optional
-
-# Proxy Configuration
-PROXY_HOST=0.0.0.0
-PROXY_PORT=8000
-CORS_ORIGINS=http://localhost:3000,http://localhost:5173
-
-# JWT Configuration
-JWT_ALGORITHMS=RS256
-JWT_ISSUER=https://login.microsoftonline.com/your-tenant-id/v2.0
-```
-
-### 3. Run the Application
-
-```bash
-python main.py
-```
-
-Or using uvicorn directly:
-
-```bash
-uvicorn main:app --host 0.0.0.0 --port 8000 --reload
-```
+4. **Run the proxy**:
+   ```bash
+   python main.py
+   ```
 
 ## API Endpoints
 
-### Health Check
-- `GET /health` - Check service health and connectivity
-
-### Network Configuration
-- `POST /api/network-config` - Create network configuration
-
-### AWS Lambda
-- `POST /api/lambda/invoke` - Invoke Lambda functions
-
-### AWS S3
-- `GET /api/s3/buckets` - List S3 buckets
-- `POST /api/s3/objects` - List objects in a bucket
-
-### AWS EC2
-- `POST /api/ec2/instances` - List EC2 instances
-
-### AWS CloudWatch
-- `POST /api/cloudwatch/metrics` - Get CloudWatch metrics
-
-### User Profile
-- `GET /api/user/profile` - Get current user information
-
-## Authentication
-
-All API endpoints (except `/health`) require a valid Azure AD JWT token in the Authorization header:
-
+### Authentication
+All API endpoints require a valid Azure AD bearer token in the `Authorization` header:
 ```
 Authorization: Bearer <your-jwt-token>
 ```
 
-## Integration with React App
+### Health Check
+```
+GET /health
+```
+Returns the health status of Azure and AWS Gateway connections.
 
-Update your React app's `apiService.ts` to use the Python proxy:
+### Universal API Proxy
+```
+GET /api/{path}
+POST /api/{path}
+PUT /api/{path}
+DELETE /api/{path}
+PATCH /api/{path}
+```
+All requests to `/api/*` are forwarded to AWS API Gateway after token validation.
 
-```typescript
-class ApiService {
-  private baseUrl: string;
+### User Profile
+```
+GET /api/user/profile
+```
+Get information about the authenticated user (handled locally, not forwarded).
 
-  constructor() {
-    this.baseUrl = 'http://localhost:8000/api';
-  }
+## Request Flow Example
 
-  async postNetworkConfig(config: NetworkConfig, userInfo?: { id?: string; email?: string }): Promise<ApiResponse> {
-    try {
-      const response = await fetch(`${this.baseUrl}/network-config`, {
-        method: 'POST',
-        headers: {
-          'Content-Type': 'application/json',
-          'Authorization': `Bearer ${await this.getAccessToken()}`, // Get from MSAL
-        },
-        body: JSON.stringify(config)
-      });
+1. **Frontend Request**:
+   ```javascript
+   fetch('/api/network-config', {
+     method: 'POST',
+     headers: {
+       'Authorization': 'Bearer <azure-ad-token>',
+       'Content-Type': 'application/json'
+     },
+     body: JSON.stringify({ sourceIp: '192.168.1.1' })
+   })
+   ```
 
-      if (!response.ok) {
-        throw new Error(`HTTP error! status: ${response.status}`);
-      }
+2. **Python Proxy Processing**:
+   - Validates Azure AD token
+   - Extracts user information
+   - Forwards to: `{AWS_API_GATEWAY_URL}/network-config`
 
-      return await response.json();
-    } catch (error) {
-      console.error('API call failed:', error);
-      return {
-        success: false,
-        message: 'Failed to submit network configuration',
-        error: error instanceof Error ? error.message : 'Unknown error'
-      };
-    }
-  }
+3. **AWS Gateway Request**:
+   ```http
+   POST /network-config
+   Authorization: Bearer <aws-api-key>
+   X-User-ID: user-guid
+   X-User-Email: user@example.com
+   X-User-Roles: admin,user
+   Content-Type: application/json
+   
+   {"sourceIp": "192.168.1.1"}
+   ```
 
-  private async getAccessToken(): Promise<string> {
-    // Get access token from MSAL
-    const account = msalInstance.getActiveAccount();
-    if (!account) {
-      throw new Error('No active account');
-    }
+## User Context Headers
 
-    const response = await msalInstance.acquireTokenSilent({
-      scopes: ['User.Read'],
-      account: account
-    });
+The proxy adds the following headers to AWS Gateway requests:
 
-    return response.accessToken;
+- `X-User-ID`: Azure AD user ID
+- `X-User-Email`: User email address
+- `X-User-Roles`: Comma-separated list of user roles
+- `X-User-Groups`: Comma-separated list of user groups
+- `X-Tenant-ID`: Azure AD tenant ID
+
+## Response Format
+
+All endpoints return JSON responses in the following format:
+
+```json
+{
+  "success": true,
+  "status_code": 200,
+  "data": {
+    // Response from AWS API Gateway
+  },
+  "user": {
+    "user_id": "user-guid",
+    "email": "user@example.com",
+    "name": "User Name",
+    "roles": ["role1", "role2"],
+    "groups": ["group1", "group2"],
+    "tenant_id": "tenant-guid"
   }
 }
 ```
 
-## Security Considerations
+## Error Handling
 
-1. **Token Validation**: All tokens are validated against Azure AD public keys
-2. **User Context**: User information is extracted and forwarded to AWS
-3. **CORS**: Configured to only allow specific origins
-4. **Error Handling**: Sensitive information is not exposed in error messages
-5. **Logging**: Comprehensive logging for debugging and monitoring
+- **401 Unauthorized**: Invalid or missing bearer token
+- **502 Bad Gateway**: AWS API Gateway connection error
+- **504 Gateway Timeout**: AWS API Gateway timeout
+- **500 Internal Server Error**: Other errors
 
-## AWS Service Account Setup
+## Docker Support
 
-1. Create an IAM user or role with appropriate permissions
-2. Generate access keys for the user/role
-3. Configure the credentials in your `.env` file
-4. Ensure the service account has permissions for the AWS services you need
+Build and run with Docker:
 
-### Example IAM Policy
+```bash
+docker build -t aws-gateway-proxy .
+docker run -p 8000:8000 --env-file .env aws-gateway-proxy
+```
 
-```json
-{
-    "Version": "2012-10-17",
-    "Statement": [
-        {
-            "Effect": "Allow",
-            "Action": [
-                "lambda:InvokeFunction",
-                "s3:ListBucket",
-                "s3:GetObject",
-                "ec2:DescribeInstances",
-                "cloudwatch:GetMetricStatistics"
-            ],
-            "Resource": "*"
-        }
-    ]
-}
+Or use Docker Compose:
+
+```bash
+docker-compose up
 ```
 
 ## Development
 
-### Running Tests
+The proxy runs on `http://localhost:8000` by default. You can access the interactive API documentation at `http://localhost:8000/docs`.
 
-```bash
-# Install test dependencies
-pip install pytest pytest-asyncio httpx
+## AWS API Gateway Setup
 
-# Run tests
-pytest
-```
+1. **Create API Gateway**: Set up REST API or HTTP API
+2. **Configure Routes**: Set up routes that match your frontend API paths
+3. **Add API Key**: Create and configure API key for authentication
+4. **Integrate Backend**: Connect to Lambda functions, S3, or other AWS services
+5. **Deploy**: Deploy to a stage (e.g., `prod`, `dev`)
 
-### Code Structure
+## Security Considerations
 
-```
-python_proxy/
-├── main.py          # FastAPI application
-├── auth.py          # Azure AD token validation
-├── aws_client.py    # AWS service integration
-├── config.py        # Configuration management
-├── models.py        # Pydantic models
-├── requirements.txt # Python dependencies
-├── env.example      # Environment variables template
-└── README.md        # This file
-```
-
-## Deployment
-
-### Docker
-
-```dockerfile
-FROM python:3.11-slim
-
-WORKDIR /app
-COPY requirements.txt .
-RUN pip install -r requirements.txt
-
-COPY . .
-EXPOSE 8000
-
-CMD ["uvicorn", "main:app", "--host", "0.0.0.0", "--port", "8000"]
-```
-
-### Environment Variables
-
-For production, set these environment variables:
-
-- `AZURE_TENANT_ID`
-- `AZURE_CLIENT_ID`
-- `AZURE_CLIENT_SECRET`
-- `AWS_ACCESS_KEY_ID`
-- `AWS_SECRET_ACCESS_KEY`
-- `AWS_REGION`
-- `CORS_ORIGINS`
-
-## Troubleshooting
-
-### Common Issues
-
-1. **Token Validation Fails**: Check Azure AD configuration and ensure the token is valid
-2. **AWS Connection Fails**: Verify AWS credentials and permissions
-3. **CORS Errors**: Update `CORS_ORIGINS` in your environment variables
-4. **Port Already in Use**: Change `PROXY_PORT` in your environment variables
-
-### Logs
-
-The application logs all requests and errors. Check the console output for debugging information.
-
-## Contributing
-
-1. Fork the repository
-2. Create a feature branch
-3. Make your changes
-4. Add tests if applicable
-5. Submit a pull request
-
-## License
-
-This project is licensed under the MIT License. 
+1. **Token Validation**: All tokens are validated against Azure AD public keys
+2. **API Key**: AWS API Gateway uses API key for authentication
+3. **User Context**: User information is securely forwarded as headers
+4. **CORS**: Configured to only allow specific origins
+5. **Logging**: Comprehensive logging for debugging and monitoring 

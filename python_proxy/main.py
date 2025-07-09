@@ -3,16 +3,11 @@ from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse
 import logging
 import traceback
-from typing import Optional
+import httpx
+from typing import Optional, Dict, Any
 
 from config import settings
 from auth import auth
-from aws_client import aws_client
-from models import (
-    NetworkConfig, LambdaInvocationRequest, S3ListRequest, 
-    EC2ListRequest, CloudWatchMetricsRequest, ApiResponse, 
-    UserInfo, HealthCheckResponse
-)
 
 # Configure logging
 logging.basicConfig(level=logging.INFO)
@@ -20,8 +15,8 @@ logger = logging.getLogger(__name__)
 
 # Create FastAPI app
 app = FastAPI(
-    title="AWS Proxy API",
-    description="Python proxy for validating Azure AD tokens and forwarding requests to AWS",
+    title="AWS Gateway Proxy",
+    description="Python proxy for validating Azure AD tokens and forwarding requests to AWS API Gateway",
     version="1.0.0"
 )
 
@@ -34,8 +29,8 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
-async def get_current_user(authorization: Optional[str] = Header(None)) -> UserInfo:
-    """Dependency to get current authenticated user"""
+async def validate_bearer_token(authorization: Optional[str] = Header(None)) -> Dict[str, Any]:
+    """Validate bearer token and return user info"""
     if not authorization:
         raise HTTPException(status_code=401, detail="Authorization header required")
     
@@ -51,7 +46,7 @@ async def get_current_user(authorization: Optional[str] = Header(None)) -> UserI
         # Extract user information
         user_info = auth.extract_user_info(token_payload)
         
-        return UserInfo(**user_info)
+        return user_info
         
     except HTTPException:
         raise
@@ -59,211 +54,137 @@ async def get_current_user(authorization: Optional[str] = Header(None)) -> UserI
         logger.error(f"Token validation error: {e}")
         raise HTTPException(status_code=401, detail="Invalid token")
 
-@app.get("/health", response_model=HealthCheckResponse)
+async def forward_to_aws_gateway(request: Request, user_info: Dict[str, Any]) -> Dict[str, Any]:
+    """Forward authenticated request to AWS API Gateway"""
+    try:
+        # Get the request method and path
+        method = request.method
+        path = request.url.path
+        
+        # Remove the /api prefix for AWS Gateway
+        if path.startswith('/api'):
+            aws_path = path[4:]  # Remove '/api'
+        else:
+            aws_path = path
+        
+        # Get request body if it's a POST/PUT request
+        body = None
+        if method in ['POST', 'PUT', 'PATCH']:
+            try:
+                body = await request.json()
+            except:
+                body = await request.body()
+        
+        # Get query parameters
+        query_params = dict(request.query_params)
+        
+        # Prepare headers for AWS Gateway
+        headers = {
+            'Content-Type': 'application/json',
+            'Authorization': f'Bearer {settings.aws_api_key}',
+            'X-User-ID': user_info['user_id'],
+            'X-User-Email': user_info['email'],
+            'X-User-Roles': ','.join(user_info.get('roles', [])),
+            'X-User-Groups': ','.join(user_info.get('groups', [])),
+            'X-Tenant-ID': user_info.get('tenant_id', ''),
+        }
+        
+        # Add original headers that should be forwarded
+        for header_name, header_value in request.headers.items():
+            if header_name.lower() not in ['host', 'authorization', 'content-length']:
+                headers[header_name] = header_value
+        
+        # Build AWS Gateway URL
+        aws_gateway_url = f"{settings.aws_api_gateway_url}{aws_path}"
+        
+        # Add query parameters to URL
+        if query_params:
+            query_string = '&'.join([f"{k}={v}" for k, v in query_params.items()])
+            aws_gateway_url += f"?{query_string}"
+        
+        logger.info(f"Forwarding {method} {path} to AWS Gateway: {aws_gateway_url}")
+        logger.info(f"User: {user_info['email']}")
+        
+        # Make request to AWS Gateway
+        async with httpx.AsyncClient(timeout=30.0) as client:
+            if method == 'GET':
+                response = await client.get(aws_gateway_url, headers=headers)
+            elif method == 'POST':
+                response = await client.post(aws_gateway_url, headers=headers, json=body)
+            elif method == 'PUT':
+                response = await client.put(aws_gateway_url, headers=headers, json=body)
+            elif method == 'DELETE':
+                response = await client.delete(aws_gateway_url, headers=headers)
+            elif method == 'PATCH':
+                response = await client.patch(aws_gateway_url, headers=headers, json=body)
+            else:
+                raise HTTPException(status_code=405, detail="Method not allowed")
+            
+            # Return the response from AWS Gateway
+            response_data = response.json() if response.headers.get('content-type', '').startswith('application/json') else response.text
+            
+            return {
+                "success": response.status_code < 400,
+                "status_code": response.status_code,
+                "data": response_data,
+                "user": user_info
+            }
+            
+    except httpx.TimeoutException:
+        logger.error("Timeout when forwarding request to AWS Gateway")
+        raise HTTPException(status_code=504, detail="Gateway timeout")
+    except httpx.RequestError as e:
+        logger.error(f"Error forwarding request to AWS Gateway: {e}")
+        raise HTTPException(status_code=502, detail="Bad gateway")
+    except Exception as e:
+        logger.error(f"Unexpected error forwarding request: {e}")
+        raise HTTPException(status_code=500, detail="Internal server error")
+
+@app.get("/health")
 async def health_check():
     """Health check endpoint"""
     try:
-        # Test AWS connection
-        aws_connected = False
-        try:
-            sts = aws_client.session.client('sts')
-            sts.get_caller_identity()
-            aws_connected = True
-        except Exception as e:
-            logger.warning(f"AWS connection test failed: {e}")
-        
         # Check Azure configuration
         azure_configured = bool(
             settings.azure_tenant_id and 
-            settings.azure_client_id and 
-            settings.azure_client_secret
+            settings.azure_client_id
         )
         
-        return HealthCheckResponse(
-            status="healthy" if aws_connected and azure_configured else "degraded",
-            aws_connected=aws_connected,
-            azure_configured=azure_configured
-        )
+        # Check AWS Gateway configuration
+        aws_gateway_configured = bool(settings.aws_api_gateway_url)
+        
+        return {
+            "status": "healthy" if azure_configured and aws_gateway_configured else "degraded",
+            "azure_configured": azure_configured,
+            "aws_gateway_configured": aws_gateway_configured,
+            "aws_gateway_url": settings.aws_api_gateway_url
+        }
         
     except Exception as e:
         logger.error(f"Health check failed: {e}")
-        return HealthCheckResponse(
-            status="unhealthy",
-            aws_connected=False,
-            azure_configured=False
-        )
-
-@app.post("/api/network-config", response_model=ApiResponse)
-async def create_network_config(
-    config: NetworkConfig,
-    current_user: UserInfo = Depends(get_current_user)
-):
-    """Create network configuration"""
-    try:
-        # Add user context to the config
-        config_dict = config.dict()
-        config_dict['user_id'] = current_user.user_id
-        config_dict['user_email'] = current_user.email
-        
-        # Forward to AWS
-        result = aws_client.create_network_config(config_dict)
-        
-        return ApiResponse(
-            success=True,
-            message="Network configuration created successfully",
-            data=result
-        )
-        
-    except Exception as e:
-        logger.error(f"Create network config failed: {e}")
-        return ApiResponse(
-            success=False,
-            message="Failed to create network configuration",
-            error=str(e)
-        )
-
-@app.post("/api/lambda/invoke", response_model=ApiResponse)
-async def invoke_lambda_function(
-    request: LambdaInvocationRequest,
-    current_user: UserInfo = Depends(get_current_user)
-):
-    """Invoke AWS Lambda function"""
-    try:
-        # Add user context to the payload
-        payload = request.payload.copy()
-        payload['user_context'] = {
-            'user_id': current_user.user_id,
-            'email': current_user.email,
-            'roles': current_user.roles
+        return {
+            "status": "unhealthy",
+            "azure_configured": False,
+            "aws_gateway_configured": False
         }
-        
-        # Invoke Lambda function
-        result = aws_client.invoke_lambda_function(
-            function_name=request.function_name,
-            payload=payload,
-            invocation_type=request.invocation_type
-        )
-        
-        return ApiResponse(
-            success=True,
-            message="Lambda function invoked successfully",
-            data=result
-        )
-        
-    except Exception as e:
-        logger.error(f"Lambda invocation failed: {e}")
-        return ApiResponse(
-            success=False,
-            message="Failed to invoke Lambda function",
-            error=str(e)
-        )
 
-@app.get("/api/s3/buckets", response_model=ApiResponse)
-async def list_s3_buckets(current_user: UserInfo = Depends(get_current_user)):
-    """List S3 buckets"""
-    try:
-        result = aws_client.list_s3_buckets()
-        
-        return ApiResponse(
-            success=True,
-            message="S3 buckets retrieved successfully",
-            data=result
-        )
-        
-    except Exception as e:
-        logger.error(f"S3 list buckets failed: {e}")
-        return ApiResponse(
-            success=False,
-            message="Failed to list S3 buckets",
-            error=str(e)
-        )
-
-@app.post("/api/s3/objects", response_model=ApiResponse)
-async def list_s3_objects(
-    request: S3ListRequest,
-    current_user: UserInfo = Depends(get_current_user)
+@app.api_route("/api/{path:path}", methods=["GET", "POST", "PUT", "DELETE", "PATCH"])
+async def proxy_to_aws_gateway(
+    request: Request,
+    path: str,
+    user_info: Dict[str, Any] = Depends(validate_bearer_token)
 ):
-    """List objects in S3 bucket"""
-    try:
-        result = aws_client.list_s3_objects(
-            bucket_name=request.bucket_name,
-            prefix=request.prefix
-        )
-        
-        return ApiResponse(
-            success=True,
-            message="S3 objects retrieved successfully",
-            data=result
-        )
-        
-    except Exception as e:
-        logger.error(f"S3 list objects failed: {e}")
-        return ApiResponse(
-            success=False,
-            message="Failed to list S3 objects",
-            error=str(e)
-        )
+    """Proxy all API requests to AWS Gateway after token validation"""
+    return await forward_to_aws_gateway(request, user_info)
 
-@app.post("/api/ec2/instances", response_model=ApiResponse)
-async def list_ec2_instances(
-    request: EC2ListRequest,
-    current_user: UserInfo = Depends(get_current_user)
-):
-    """List EC2 instances"""
-    try:
-        result = aws_client.get_ec2_instances(filters=request.filters)
-        
-        return ApiResponse(
-            success=True,
-            message="EC2 instances retrieved successfully",
-            data=result
-        )
-        
-    except Exception as e:
-        logger.error(f"EC2 list instances failed: {e}")
-        return ApiResponse(
-            success=False,
-            message="Failed to list EC2 instances",
-            error=str(e)
-        )
-
-@app.post("/api/cloudwatch/metrics", response_model=ApiResponse)
-async def get_cloudwatch_metrics(
-    request: CloudWatchMetricsRequest,
-    current_user: UserInfo = Depends(get_current_user)
-):
-    """Get CloudWatch metrics"""
-    try:
-        result = aws_client.get_cloudwatch_metrics(
-            namespace=request.namespace,
-            metric_name=request.metric_name,
-            dimensions=request.dimensions,
-            start_time=request.start_time,
-            end_time=request.end_time
-        )
-        
-        return ApiResponse(
-            success=True,
-            message="CloudWatch metrics retrieved successfully",
-            data=result
-        )
-        
-    except Exception as e:
-        logger.error(f"CloudWatch metrics failed: {e}")
-        return ApiResponse(
-            success=False,
-            message="Failed to get CloudWatch metrics",
-            error=str(e)
-        )
-
-@app.get("/api/user/profile", response_model=ApiResponse)
-async def get_user_profile(current_user: UserInfo = Depends(get_current_user)):
-    """Get current user profile"""
-    return ApiResponse(
-        success=True,
-        message="User profile retrieved successfully",
-        data=current_user.dict()
-    )
+@app.get("/api/user/profile")
+async def get_user_profile(user_info: Dict[str, Any] = Depends(validate_bearer_token)):
+    """Get current user profile - requires valid bearer token"""
+    return {
+        "success": True,
+        "message": "User profile retrieved successfully",
+        "data": user_info
+    }
 
 @app.exception_handler(Exception)
 async def global_exception_handler(request: Request, exc: Exception):
@@ -276,15 +197,15 @@ async def global_exception_handler(request: Request, exc: Exception):
         content={
             "success": False,
             "message": "Internal server error",
-            "error": str(exc) if settings.proxy_host == "0.0.0.0" else "Internal server error"
+            "error": str(exc)
         }
     )
 
 if __name__ == "__main__":
     import uvicorn
     uvicorn.run(
-        "main:app",
+        app,
         host=settings.proxy_host,
         port=settings.proxy_port,
-        reload=True
+        log_level="info"
     ) 

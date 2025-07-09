@@ -11,11 +11,9 @@ class Settings(BaseSettings):
     azure_client_id: str = os.getenv("AZURE_CLIENT_ID", "")
     azure_client_secret: str = os.getenv("AZURE_CLIENT_SECRET", "")
     
-    # AWS Configuration
-    aws_access_key_id: str = os.getenv("AWS_ACCESS_KEY_ID", "")
-    aws_secret_access_key: str = os.getenv("AWS_SECRET_ACCESS_KEY", "")
-    aws_region: str = os.getenv("AWS_REGION", "us-east-1")
-    aws_session_token: str = os.getenv("AWS_SESSION_TOKEN", "")
+    # AWS API Gateway Configuration
+    aws_api_gateway_url: str = os.getenv("AWS_API_GATEWAY_URL", "")
+    aws_api_key: str = os.getenv("AWS_API_KEY", "")
     
     # Proxy Configuration
     proxy_host: str = os.getenv("PROXY_HOST", "0.0.0.0")
